@@ -12,8 +12,13 @@
     them elsewhere. When -Path is supplied it also calls the API and returns the parsed response.
 
     Credential handling:
-    - Provide -UserId together with either -Password (any of String / SecureString / PSCredential) or a
-      pre-computed -UserHash. If a password is given, its MD5 hash is calculated for you.
+    - For authenticated calls set -UserId to your account User ID and -UserHash to your account
+      User Key (both shown on the uRADMonitor Dashboard -> API tab). The User Key IS the value the
+      API expects for X-User-hash; this is the reliable method for reading data and registering
+      devices.
+    - -Password is a convenience that computes MD5(password) for X-User-hash. It only works if your
+      account's User Key equals the MD5 of your password; otherwise authentication fails, so prefer
+      -UserHash with the Dashboard User Key.
     - With no credentials the script falls back to the public guest identity (www / global), which can
       read publicly shared device data only.
 
@@ -24,18 +29,26 @@
 
     Creating a device:
     - Use -CreateDevice to register a new sensor via DIDAP (Dynamic ID Allocation Protocol). The
-      script POSTs to /api/v1/upload/exp/ with a placeholder X-Device-id (-DeviceId, default
-      13000000); the server allocates and returns a unique Device ID (setid, format 13xxxxxx).
+      script POSTs to /api/v1/upload/exp/01/<epoch>/<measurement> with the placeholder X-Device-id
+      (-DeviceId, default 13000000); the server allocates and returns a unique Device ID (setid,
+      format 13xxxxxx). EXP values travel as URL path segments (ID/value), like the device firmware
+      sends them. Field 01 (local time) is mandatory and at least one real measurement must be
+      present (see -InitialValues).
     - This requires authenticated credentials (the X-User-hash is your account User Key); the
       public guest identity cannot register devices.
     - Store the returned Device ID - all future data uploads for this sensor must use it.
+    - The registration upload also carries a set of zeroed sensor values (-InitialValues) and the
+      result includes a DeviceUrl to view the device on the map. The values travel with the
+      registration on purpose: a second upload immediately afterwards is refused with
+      "Too many reports".
 
 .PARAMETER UserId
     uRADMonitor account user id. Defaults to 'www' (public read-only guest).
 
 .PARAMETER Password
-    Account password used to derive the X-User-hash. Accepts a plain string, a SecureString, or a
-    PSCredential (its password is used). Ignored when -UserHash is supplied.
+    Convenience alternative to -UserHash that derives X-User-hash as MD5(password). Accepts a plain
+    string, a SecureString, or a PSCredential. Only works if your account User Key equals the MD5 of
+    your password; otherwise use -UserHash. Ignored when -UserHash is supplied.
 
 .PARAMETER UserHash
     Pre-computed X-User-hash value. Use this to skip password hashing. Defaults to 'global' when no
@@ -56,7 +69,14 @@
 
 .PARAMETER DeviceId
     Placeholder X-Device-id sent with a -CreateDevice registration request. Defaults to 13000000,
-    which signals the server to allocate a new ID.
+    which signals the server to allocate a new ID. Values such as FFFFFFFF or 00000000 are rejected
+    with "Invalid Device ID".
+
+.PARAMETER InitialValues
+    EXP fields sent with the registration upload as 'ID/value' pairs, so the new device starts with
+    initialised readings. Defaults to temperature, pressure, humidity, CO2, PM2.5 and radiation all
+    set to 0. At least one measurement is required: a timestamp-only payload is rejected with
+    "EXP payload has no valid measurement". Examples: '02/21.5' temperature, '0B/12' radiation CPM.
 
 .EXAMPLE
     .\uRADMonitor - Get API Headers and Data.ps1 -ShowHeaders
@@ -80,6 +100,25 @@
             fallback, optional API call via Invoke-RestMethod
     1.1.0 - Added -CreateDevice: register a new sensor via DIDAP (POST /api/v1/upload/exp/ with a
             placeholder X-Device-id) and return the server-assigned Device ID (setid)
+    1.1.1 - Registration now sends the mandatory EXP local-time field (01) in the POST body; without
+            it the server responds "EXP payload missing timelocal" and returns no Device ID
+    1.1.2 - Send the registration payload as raw text/plain (not form-urlencoded) so the server's EXP
+            parser actually reads the timelocal field from the request body
+    1.1.3 - Trigger DIDAP with an invalid Device ID (default FFFFFFFF) instead of the valid open-data
+            ID 13000000; a 13xxxxxx ID is treated as a data upload and rejected with "EXP payload
+            missing timelocal"
+    1.1.4 - Reverted to Device ID 13000000 (FFFFFFFF/00000000 return "Invalid Device ID") and now
+            send the EXP payload as URL path segments (/upload/exp/01/<epoch>) like the firmware,
+            which the server parses instead of a request body
+    1.1.5 - Registration payload now includes a measurement field (-RegistrationMeasurement, default
+            02/0); a timestamp-only payload is rejected with "EXP payload has no valid measurement"
+    1.2.0 - After registration the new device is seeded with zeroed sensor values (-SeedFields /
+            -NoSeed) and the result now includes a DeviceUrl to view the device on the map
+    1.2.1 - Added -UseBasicParsing to the upload request (avoids the IE-engine script execution
+            prompt that could interrupt the seed upload) and report the seed upload outcome
+    1.3.0 - Zeroed sensor values are now sent with the registration upload itself (-InitialValues,
+            replaces -RegistrationMeasurement/-SeedFields/-NoSeed); the previous second upload was
+            rejected by the server with "Too many reports"
 #>
 
 [CmdletBinding()]
@@ -98,7 +137,9 @@ param(
 
     [switch] $CreateDevice,
 
-    [string] $DeviceId = '13000000'
+    [string] $DeviceId = '13000000',
+
+    [string] $InitialValues = '02/0/03/0/04/0/07/0/09/0/0B/0'
 )
 
 # Converts a password (String / SecureString / PSCredential) to its lowercase MD5 hex hash.
@@ -127,28 +168,50 @@ function Get-PasswordHash {
     return -join ($bytes | ForEach-Object { $_.ToString('x2') })
 }
 
+# Sends an EXP payload for a device. EXP values travel as URL path segments (ID/value) exactly like
+# the device firmware sends them; field 01 (local time) is always prepended here.
+function Send-uRADMonitorExp {
+    param(
+        [Parameter(Mandatory)] [hashtable] $Headers,
+        [Parameter(Mandatory)] [string]    $BaseUri,
+        [Parameter(Mandatory)] [string]    $DeviceId,
+        [string] $Fields
+    )
+
+    $expHeaders = @{} + $Headers
+    $expHeaders['X-Device-id'] = $DeviceId
+
+    $payload = '01/{0}' -f [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+    if (-not [string]::IsNullOrWhiteSpace($Fields)) {
+        $payload = '{0}/{1}' -f $payload, $Fields.Trim('/')
+    }
+    $uri = "{0}/upload/exp/{1}" -f $BaseUri.TrimEnd('/'), $payload
+
+    return (Invoke-WebRequest -Uri $uri -Headers $expHeaders -Method Post -UseBasicParsing -ErrorAction Stop).Content
+}
+
 # Registers a new device via DIDAP by POSTing to the upload endpoint with a placeholder Device ID;
-# the server allocates a real id and returns it as { "setid": 13xxxxxx } (unquoted hex).
+# the server allocates a real id and returns it as { "setid": "13xxxxxx" }.
 function New-uRADMonitorDevice {
     param(
         [Parameter(Mandatory)] [hashtable] $Headers,
         [Parameter(Mandatory)] [string]    $BaseUri,
-        [string] $RegistrationId = '13000000'
+        [string] $RegistrationId = '13000000',
+        [string] $InitialValues  = '02/0/03/0/04/0/07/0/09/0/0B/0'
     )
 
-    $uri = "{0}/upload/exp/" -f $BaseUri.TrimEnd('/')
+    # The initial values ride along with the registration: the server rejects a timestamp-only
+    # payload, and a second upload straight after would be refused with "Too many reports".
+    $content = Send-uRADMonitorExp -Headers $Headers -BaseUri $BaseUri -DeviceId $RegistrationId -Fields $InitialValues
 
-    $registerHeaders = @{} + $Headers
-    $registerHeaders['X-Device-id'] = $RegistrationId
+    $match       = [regex]::Match($content, '"setid"\s*:\s*"?([0-9A-Fa-f]{6,8})"?')
+    $newDeviceId = if ($match.Success) { $match.Groups[1].Value.ToUpper() } else { $null }
 
-    $response = Invoke-WebRequest -Uri $uri -Headers $registerHeaders -Method Post -ErrorAction Stop
-    $content  = $response.Content
-
-    # The setid value is unquoted hex, so extract it directly instead of parsing JSON.
-    $match = [regex]::Match($content, '"setid"\s*:\s*"?([0-9A-Fa-f]{6,8})"?')
     return [pscustomobject]@{
-        NewDeviceId = if ($match.Success) { $match.Groups[1].Value.ToUpper() } else { $null }
-        RawResponse = $content
+        NewDeviceId   = $newDeviceId
+        DeviceUrl     = if ($newDeviceId) { "https://www.uradmonitor.com/?open=$newDeviceId" } else { $null }
+        InitialValues = $InitialValues
+        RawResponse   = $content
     }
 }
 
@@ -186,9 +249,11 @@ if ($CreateDevice) {
     }
 
     try {
-        $result = New-uRADMonitorDevice -Headers $headers -BaseUri $BaseUri -RegistrationId $DeviceId
+        $result = New-uRADMonitorDevice -Headers $headers -BaseUri $BaseUri -RegistrationId $DeviceId -InitialValues $InitialValues
         if ($result.NewDeviceId) {
             Write-Host "New device registered. Device ID: $($result.NewDeviceId)"
+            Write-Host "Initial values sent: $($result.InitialValues)"
+            Write-Host "View it here: $($result.DeviceUrl)"
         }
         else {
             Write-Warning "Registration request sent but no Device ID was returned. Server response: $($result.RawResponse)"
