@@ -19,8 +19,9 @@
     - -Password is a convenience that computes MD5(password) for X-User-hash. It only works if your
       account's User Key equals the MD5 of your password; otherwise authentication fails, so prefer
       -UserHash with the Dashboard User Key.
-    - With no credentials the script falls back to the public guest identity (www / global), which can
-      read publicly shared device data only.
+        - With no credentials the script falls back to the public guest identity (www / global). Public API
+            calls may require server-side validation under the uRADMonitor Shield; use dashboard credentials
+            for reliable API access.
 
     Common API paths (relative to https://data.uradmonitor.com/api/v1/):
         devices                         -> list devices visible to the account
@@ -116,9 +117,11 @@
             -NoSeed) and the result now includes a DeviceUrl to view the device on the map
     1.2.1 - Added -UseBasicParsing to the upload request (avoids the IE-engine script execution
             prompt that could interrupt the seed upload) and report the seed upload outcome
-    1.3.0 - Zeroed sensor values are now sent with the registration upload itself (-InitialValues,
+        1.3.0 - Zeroed sensor values are now sent with the registration upload itself (-InitialValues,
             replaces -RegistrationMeasurement/-SeedFields/-NoSeed); the previous second upload was
             rejected by the server with "Too many reports"
+        1.3.1 - Clarified that public www/global API calls may require uRADMonitor Shield validation
+        1.3.2 - Added dashboard visibility guidance after successful device registration
 #>
 
 [CmdletBinding()]
@@ -208,10 +211,11 @@ function New-uRADMonitorDevice {
     $newDeviceId = if ($match.Success) { $match.Groups[1].Value.ToUpper() } else { $null }
 
     return [pscustomobject]@{
-        NewDeviceId   = $newDeviceId
-        DeviceUrl     = if ($newDeviceId) { "https://www.uradmonitor.com/?open=$newDeviceId" } else { $null }
-        InitialValues = $InitialValues
-        RawResponse   = $content
+        NewDeviceId      = $newDeviceId
+        DeviceUrl        = if ($newDeviceId) { "https://www.uradmonitor.com/?open=$newDeviceId" } else { $null }
+        InitialValues     = $InitialValues
+        DashboardNotice  = 'The device may take some time to appear in your dashboard. If it does not appear after waiting, contact uRADMonitor support to have it added to your dashboard.'
+        RawResponse       = $content
     }
 }
 
@@ -254,6 +258,7 @@ if ($CreateDevice) {
             Write-Host "New device registered. Device ID: $($result.NewDeviceId)"
             Write-Host "Initial values sent: $($result.InitialValues)"
             Write-Host "View it here: $($result.DeviceUrl)"
+            Write-Host "Dashboard: $($result.DashboardNotice)"
         }
         else {
             Write-Warning "Registration request sent but no Device ID was returned. Server response: $($result.RawResponse)"
