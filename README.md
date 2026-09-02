@@ -26,6 +26,31 @@ register a brand‑new device using uRADMonitor's **DIDAP** (Dynamic ID Allocati
 | `uRADMonitor - Get API Headers and Data.ps1` | Core script: headers, API queries, device registration. |
 | `uRADMonitor GUI.ps1` | uRADMonitor API Helper – Windows Forms front-end for the core script. |
 | `uradmonitor-logo.png` / `uradmonitor.ico` | Optional branding assets used by the GUI. |
+| `gui-screenshot.png` | Screenshot used in this README. |
+
+## GUI
+
+`uRADMonitor GUI.ps1` (**uRADMonitor API Helper**) provides a small Windows Forms front-end for the
+core script – the easiest way to get started:
+
+```powershell
+.\uRADMonitor GUI.ps1
+```
+
+![uRADMonitor API Helper](gui-screenshot.png)
+
+- Enter your User ID and User Key (masked, with a **Show** toggle).
+- Pick a **Path** preset (`devices`, `devices/{id}`, `devices/{id}/all/3600`, …) or type your own;
+  `{id}` is replaced with the selected Device ID.
+- **Refresh list** loads your device IDs into the Device ID picker.
+- **Get Data**, **Create Device**, and **Show Headers** run the matching core-script action and show
+  the result as formatted JSON.
+
+Windows Forms needs an STA thread, so the GUI relaunches itself in Windows PowerShell (`-STA`) when
+started from `pwsh`. Entering the key in the GUI also keeps it out of your shell history.
+
+The header logo and window icon are loaded from `uradmonitor-logo.png` and `uradmonitor.ico` in the
+script folder; the GUI still runs if those files are missing.
 
 ## Authentication
 
@@ -199,28 +224,6 @@ The registration upload initialises these sensors to `0`:
 > **Store the returned Device ID.** All future data uploads for that sensor must use it as
 > `X-Device-id`. Device IDs are permanently bound to your account and are recycled after ~30 days
 > of inactivity.
-
-## GUI
-
-`uRADMonitor GUI.ps1` (**uRADMonitor API Helper**) provides a small Windows Forms front-end for the
-core script:
-
-```powershell
-.\uRADMonitor GUI.ps1
-```
-
-- Enter your User ID and User Key (masked, with a **Show** toggle).
-- Pick a **Path** preset (`devices`, `devices/{id}`, `devices/{id}/all/3600`, …) or type your own;
-  `{id}` is replaced with the selected Device ID.
-- **Refresh list** loads your device IDs into the Device ID picker.
-- **Get Data**, **Create Device**, and **Show Headers** run the matching core-script action and show
-  the result as formatted JSON.
-
-Windows Forms needs an STA thread, so the GUI relaunches itself in Windows PowerShell (`-STA`) when
-started from `pwsh`. Entering the key in the GUI also keeps it out of your shell history.
-
-The header logo and window icon are loaded from `uradmonitor-logo.png` and `uradmonitor.ico` in the
-script folder; the GUI still runs if those files are missing.
 
 ## Security notes
 
