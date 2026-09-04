@@ -11,6 +11,7 @@ register a brand‑new device using uRADMonitor's **DIDAP** (Dynamic ID Allocati
 - Falls back to the public read‑only guest identity (`www` / `global`) when no credentials are supplied.
 - Calls any API path and returns the parsed response.
 - Registers a new sensor via DIDAP and returns the server‑assigned Device ID (`13xxxxxx`).
+- Can send a slow 5-minute dummy activation ramp after registration to help the new device settle without triggering SHIELD rate protection.
 
 ## Requirements
 
@@ -25,7 +26,7 @@ register a brand‑new device using uRADMonitor's **DIDAP** (Dynamic ID Allocati
 | --- | --- |
 | `uRADMonitor - Get API Headers and Data.ps1` | Core script: headers, API queries, device registration. |
 | `uRADMonitor GUI.ps1` | uRADMonitor API Helper – Windows Forms front-end for the core script. |
-| `uradmonitor-logo.png` / `uradmonitor.ico` | Optional branding assets used by the GUI. |
+| `uradmonitor-logo-2026.png` / `uradmonitor-logo-2026.ico` | Optional branding assets used by the GUI. |
 | `gui-screenshot.png` | Screenshot used in this README. |
 
 ## GUI
@@ -42,14 +43,15 @@ core script – the easiest way to get started:
 - Enter your User ID and User Key (masked, with a **Show** toggle).
 - Pick a **Path** preset (`devices`, `devices/{id}`, `devices/{id}/all/3600`, …) or type your own;
   `{id}` is replaced with the selected Device ID.
-- **Refresh list** loads your device IDs into the Device ID picker.
-- **Get Data**, **Create Device**, and **Show Headers** run the matching core-script action and show
-  the result as formatted JSON.
+- **Refresh list** loads your device IDs into the Device ID picker, while the adjacent **Get Data**
+  retrieves the selected path.
+- **Create Device** and **Show Headers** run the matching core-script action and show the result as
+  formatted JSON.
 
 Windows Forms needs an STA thread, so the GUI relaunches itself in Windows PowerShell (`-STA`) when
 started from `pwsh`. Entering the key in the GUI also keeps it out of your shell history.
 
-The header logo and window icon are loaded from `uradmonitor-logo.png` and `uradmonitor.ico` in the
+The header logo and window icon are loaded from `uradmonitor-logo-2026.png` and `uradmonitor-logo-2026.ico` in the
 script folder; the GUI still runs if those files are missing.
 
 ## Authentication
@@ -76,6 +78,10 @@ Every request is authenticated with two headers:
 | `-Path` | API path relative to the base URI (e.g. `devices`). When omitted, only the headers are returned. |
 | `-BaseUri` | API base URI. Defaults to `https://data.uradmonitor.com/api/v1`. |
 | `-ShowHeaders` | Also print the resolved headers (the hash is masked). |
+| `-SendDummyData` | Sends a single EXP upload for a device using the supplied `-DummyDataValue`. Useful for an activation test or a manual sync. |
+| `-DummyDataValue` | Dummy sensor value to send with `-SendDummyData`. Defaults to `0`. |
+| `-ActivationSyncs` | Number of slow dummy activation syncs to send after `-CreateDevice`. Defaults to `5`. |
+| `-ActivationIntervalSeconds` | Delay in seconds between activation syncs. Defaults to `60` to keep traffic gentle and within SHIELD limits. |
 | `-CreateDevice` | Register a new device via DIDAP and return the assigned Device ID. Requires authenticated credentials. |
 | `-DeviceId` | Placeholder `X-Device-id` used with `-CreateDevice`. Defaults to `13000000` (asks the server to allocate a new ID). |
 | `-InitialValues` | EXP fields (`ID/value`) sent with the registration upload. Defaults to temperature, pressure, humidity, CO₂, PM2.5 and radiation, all `0`. |
@@ -154,6 +160,8 @@ Device registration (`-CreateDevice`):
 { "setid": "1300FFFF" }
 ```
 
+> Important: the server may return a DIDAP `setid` even when the ID is not yet visible in the dashboard immediately. In live tests, it was possible to receive a valid allocation response while the account list still did not show the ID. That is consistent with SHIELD/DDoS protection behavior and can require a short wait or a fresh account-side synchronization.
+
 ## Creating a device (DIDAP)
 
 To register a new sensor, the script POSTs to the EXP upload endpoint with the placeholder
@@ -164,8 +172,16 @@ To register a new sensor, the script POSTs to the EXP upload endpoint with the p
 .\uRADMonitor - Get API Headers and Data.ps1 -UserId 7076 -UserHash '<your User Key>' -CreateDevice
 # -> New device registered. Device ID: 1300FFFF
 # -> Initial values sent: 02/0/03/0/04/0/07/0/09/0/0B/0
-# -> View it here: https://www.uradmonitor.com/?open=1300FFFF
+# -> View it here: https://www.uradmonitor.com/tools/dashboard-09/?open=1300FFFF
 ```
+
+For a new device, the script can also send a gentle 5-minute activation sequence after registration:
+
+```powershell
+.\uRADMonitor - Get API Headers and Data.ps1 -UserId 7076 -UserHash '<your User Key>' -CreateDevice -ActivationSyncs 5 -ActivationIntervalSeconds 60
+```
+
+This sends a slow ramp like `0, 1, 2, 3, 4, 5` over time so the device is active without hammering the API. This is intentional because uRADMonitor has SHIELD / DDoS protections and too many rapid DIDAP or EXP requests can trigger account or IP blocking.
 
 The request that works looks like this:
 
@@ -225,17 +241,21 @@ The registration upload initialises these sensors to `0`:
 > `X-Device-id`. Device IDs are permanently bound to your account and are recycled after ~30 days
 > of inactivity.
 
-## Security notes
+## Security and rate-limit notes
 
 - Prefer `-Password (Read-Host -AsSecureString)` or a `PSCredential` over a plain string so the
   secret doesn't land in your shell history.
 - Keep your User ID and User Key private. Rotate the key from the Dashboard if it is exposed.
 - The public guest identity (`www` / `global`) can only read publicly shared data and cannot
   register devices.
+- uRADMonitor has a SHIELD/DDoS protection layer that can flag an account or IP if DIDAP or EXP uploads are made too aggressively.
+- Do not create many DIDAP IDs in quick succession. A slow activation pattern is safer than a burst of rapid registrations or repeated uploads.
+- If a DIDAP response returns a valid `setid` but the device does not immediately appear in the dashboard, wait a few minutes and re-check the device list before retrying.
 
 ## References
 
 - [uRADMonitor Dashboard](https://www.uradmonitor.com/dashboard)
+- [uRADMonitor Dashboard 09](https://www.uradmonitor.com/tools/dashboard-09/)
 - [Open data upload tutorial (DIDAP / EXP protocol)](https://www.uradmonitor.com/open-data-upload-tutorial/)
 
 ## License

@@ -122,6 +122,9 @@
             rejected by the server with "Too many reports"
         1.3.1 - Clarified that public www/global API calls may require uRADMonitor Shield validation
         1.3.2 - Added dashboard visibility guidance after successful device registration
+        1.3.3 - Added controlled activation dummy uploads (-ActivationSyncs, -ActivationIntervalSeconds,
+            -SendDummyData) to seed a newly created device with a 5-minute ramp while respecting
+            uRADMonitor SHIELD rate limits and avoiding DIDAP/IP flagging
 #>
 
 [CmdletBinding()]
@@ -137,6 +140,14 @@ param(
     [string] $BaseUri = 'https://data.uradmonitor.com/api/v1',
 
     [switch] $ShowHeaders,
+
+    [switch] $SendDummyData,
+
+    [int] $DummyDataValue = 0,
+
+    [int] $ActivationSyncs = 5,
+
+    [int] $ActivationIntervalSeconds = 60,
 
     [switch] $CreateDevice,
 
@@ -193,6 +204,72 @@ function Send-uRADMonitorExp {
     return (Invoke-WebRequest -Uri $uri -Headers $expHeaders -Method Post -UseBasicParsing -ErrorAction Stop).Content
 }
 
+# Sends a single dummy value to keep the device active after registration. The SHIELD layer is rate
+# sensitive, so this intentionally uses a single EXP upload with a small value ramp and no burst.
+function Send-uRADMonitorDummyData {
+    param(
+        [Parameter(Mandatory)] [hashtable] $Headers,
+        [Parameter(Mandatory)] [string]    $BaseUri,
+        [Parameter(Mandatory)] [string]    $DeviceId,
+        [int] $Value = 0
+    )
+
+    $expHeaders = @{} + $Headers
+    $expHeaders['X-Device-id'] = $DeviceId
+    $payload = '01/{0}/02/{1}' -f [DateTimeOffset]::UtcNow.ToUnixTimeSeconds(), $Value
+    $uri = '{0}/upload/exp/{1}' -f $BaseUri.TrimEnd('/'), $payload
+
+    return (Invoke-WebRequest -Uri $uri -Headers $expHeaders -Method Post -UseBasicParsing -ErrorAction Stop).Content
+}
+
+# Sends a small 5-minute activation sequence with a gentle upward ramp (0..5) to make sure the
+# newly created device is visible and accepted by the platform without triggering SHIELD rate limits.
+function Invoke-uRADMonitorActivationSequence {
+    param(
+        [Parameter(Mandatory)] [hashtable] $Headers,
+        [Parameter(Mandatory)] [string]    $BaseUri,
+        [Parameter(Mandatory)] [string]    $DeviceId,
+        [int] $SyncCount = 5,
+        [int] $IntervalSeconds = 60
+    )
+
+    if ($SyncCount -le 0) {
+        return @()
+    }
+
+    $values = @()
+    if ($SyncCount -eq 1) {
+        $values = @(5)
+    }
+    else {
+        for ($i = 0; $i -lt $SyncCount - 1; $i++) {
+            $values += [Math]::Floor(($i / [double]([Math]::Max(1, $SyncCount - 1))) * 5)
+        }
+        $values += 5
+    }
+
+    $result = @()
+    for ($index = 0; $index -lt $values.Count; $index++) {
+        $value = [int]$values[$index]
+        $progress = [Math]::Round((($index + 1) / $values.Count) * 100)
+        Write-Progress -Activity 'Activating new uRADMonitor device' -Status "Minute $($index + 1) of $($values.Count): sending dummy value $value" -PercentComplete $progress
+
+        $response = Send-uRADMonitorDummyData -Headers $Headers -BaseUri $BaseUri -DeviceId $DeviceId -Value $value
+        $result += [pscustomobject]@{
+            Minute       = $index + 1
+            Value        = $value
+            Response     = $response
+            SentAtUtc    = [DateTimeOffset]::UtcNow
+        }
+
+        if ($index -lt ($values.Count - 1) -and $IntervalSeconds -gt 0) {
+            Start-Sleep -Seconds $IntervalSeconds
+        }
+    }
+
+    return $result
+}
+
 # Registers a new device via DIDAP by POSTing to the upload endpoint with a placeholder Device ID;
 # the server allocates a real id and returns it as { "setid": "13xxxxxx" }.
 function New-uRADMonitorDevice {
@@ -212,7 +289,7 @@ function New-uRADMonitorDevice {
 
     return [pscustomobject]@{
         NewDeviceId      = $newDeviceId
-        DeviceUrl        = if ($newDeviceId) { "https://www.uradmonitor.com/?open=$newDeviceId" } else { $null }
+        DeviceUrl        = if ($newDeviceId) { "https://www.uradmonitor.com/tools/dashboard-09/?open=$newDeviceId" } else { $null }
         InitialValues     = $InitialValues
         DashboardNotice  = 'The device may take some time to appear in your dashboard. If it does not appear after waiting, contact uRADMonitor support to have it added to your dashboard.'
         RawResponse       = $content
@@ -244,6 +321,36 @@ if ($ShowHeaders) {
 }
 
 # -----------------------------
+# Send a single dummy data upload for the chosen device
+# -----------------------------
+if ($SendDummyData) {
+    if ($UserId -eq 'www' -or $UserHash -eq 'global') {
+        Write-Error "Sending dummy data requires authenticated credentials (-UserId with -Password or -UserHash); the public guest identity cannot write to the device endpoint."
+        return
+    }
+
+    if ([string]::IsNullOrWhiteSpace($DeviceId)) {
+        Write-Error "A Device ID is required for dummy data uploads."
+        return
+    }
+
+    try {
+        $response = Send-uRADMonitorDummyData -Headers $headers -BaseUri $BaseUri -DeviceId $DeviceId -Value $DummyDataValue
+        $result = [pscustomobject]@{
+            DeviceId     = $DeviceId
+            DummyValue  = $DummyDataValue
+            RawResponse = $response
+        }
+        Write-Host "Dummy sync sent for device $DeviceId with value $DummyDataValue"
+        return $result
+    }
+    catch {
+        Write-Error "uRADMonitor dummy upload failed: $($_.Exception.Message)"
+        return
+    }
+}
+
+# -----------------------------
 # Optionally create (register) a new device via DIDAP
 # -----------------------------
 if ($CreateDevice) {
@@ -254,11 +361,20 @@ if ($CreateDevice) {
 
     try {
         $result = New-uRADMonitorDevice -Headers $headers -BaseUri $BaseUri -RegistrationId $DeviceId -InitialValues $InitialValues
+
         if ($result.NewDeviceId) {
             Write-Host "New device registered. Device ID: $($result.NewDeviceId)"
             Write-Host "Initial values sent: $($result.InitialValues)"
             Write-Host "View it here: $($result.DeviceUrl)"
             Write-Host "Dashboard: $($result.DashboardNotice)"
+
+            if ($ActivationSyncs -gt 0) {
+                $activation = Invoke-uRADMonitorActivationSequence -Headers $headers -BaseUri $BaseUri -DeviceId $result.NewDeviceId -SyncCount $ActivationSyncs -IntervalSeconds $ActivationIntervalSeconds
+                $result | Add-Member -NotePropertyName 'ActivationSyncs' -NotePropertyValue $ActivationSyncs
+                $result | Add-Member -NotePropertyName 'ActivationIntervalSeconds' -NotePropertyValue $ActivationIntervalSeconds
+                $result | Add-Member -NotePropertyName 'ActivationSamples' -NotePropertyValue $activation
+                Write-Host "Activation sequence completed: $($activation.Count) dummy uploads sent over $ActivationSyncs minute(s)."
+            }
         }
         else {
             Write-Warning "Registration request sent but no Device ID was returned. Server response: $($result.RawResponse)"

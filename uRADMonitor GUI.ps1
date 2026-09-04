@@ -11,11 +11,11 @@
     relaunches itself with Windows PowerShell in STA mode.
 
     Branding assets (optional, loaded from the script folder if present):
-    - uradmonitor-logo.png : header logo
-    - uradmonitor.ico      : window/taskbar icon
+    - uradmonitor-logo-2026.png : header logo
+    - uradmonitor-logo-2026.ico : window/taskbar icon
 
 .NOTES
-    Author      : DonZalmrol
+    Author      : Don Zalmrol
     Script ID   : URADMONITOR_GUI
     Created     : 2026
 
@@ -25,6 +25,12 @@
             list', and a 'Delete Device' button (opens the Dashboard; the API has no delete endpoint)
     1.2.0 - Removed the 'Delete Device' button (the public API has no delete endpoint)
     1.3.0 - Renamed to 'uRADMonitor API Helper', added logo header and window icon
+    1.3.1 - Added window icon branding, footer version/copyright text, and Don Zalmrol attribution
+    1.3.2 - Moved the device-list refresh action beside Get Data
+    1.3.3 - Used ASCII footer separators and placed Refresh list before Get Data
+    1.3.4 - Fixed footer hyperlinks to use the clicked link URL
+    1.3.5 - Updated the header logo asset
+    1.3.6 - Updated the window and taskbar icon to use the new uRADMonitor logo
 #>
 
 # Windows Forms needs a single-threaded apartment; relaunch in STA if necessary.
@@ -36,6 +42,10 @@ if ([System.Threading.Thread]::CurrentThread.GetApartmentState() -ne 'STA') {
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
+
+$scriptVersion = '1.3.6'
+$createdYear = 2026
+$currentYear = (Get-Date).Year
 
 $corePath = Join-Path -Path $PSScriptRoot -ChildPath 'uRADMonitor - Get API Headers and Data.ps1'
 if (-not (Test-Path -LiteralPath $corePath)) {
@@ -72,13 +82,14 @@ function Invoke-Core {
 # Build the form
 # -----------------------------
 $form = New-Object System.Windows.Forms.Form
-$form.Text          = 'uRADMonitor API Helper'
+$form.Text          = "uRADMonitor API Helper v$scriptVersion"
 $form.Size          = New-Object System.Drawing.Size(560, 620)
 $form.StartPosition = 'CenterScreen'
 $form.MinimumSize   = New-Object System.Drawing.Size(560, 620)
+$form.ShowIcon      = $true
 
 # Optional branding assets sitting next to the script.
-$iconPath = Join-Path $PSScriptRoot 'uradmonitor.ico'
+$iconPath = Join-Path $PSScriptRoot 'uradmonitor-logo-2026.ico'
 if (Test-Path -LiteralPath $iconPath) {
     try { $form.Icon = New-Object System.Drawing.Icon($iconPath) } catch { }
 }
@@ -89,7 +100,7 @@ $header.Size     = New-Object System.Drawing.Size(560, 60)
 $header.Dock     = 'Top'
 $form.Controls.Add($header)
 
-$logoPath = Join-Path $PSScriptRoot 'uradmonitor-logo.png'
+$logoPath = Join-Path $PSScriptRoot 'uradmonitor-logo-2026.png'
 if (Test-Path -LiteralPath $logoPath) {
     $logo = New-Object System.Windows.Forms.PictureBox
     $logo.Location = New-Object System.Drawing.Point(12, 6)
@@ -160,33 +171,40 @@ $form.Controls.Add($cmbDevice)
 
 $btnRefresh = New-Object System.Windows.Forms.Button
 $btnRefresh.Text     = 'Refresh list'
-$btnRefresh.Location = New-Object System.Drawing.Point(330, 170)
-$btnRefresh.Size     = New-Object System.Drawing.Size(195, 25)
-$form.Controls.Add($btnRefresh)
+$btnRefresh.Location = New-Object System.Drawing.Point(15, 208)
+$btnRefresh.Size     = New-Object System.Drawing.Size(118, 30)
 
 # Action buttons
 $btnGet = New-Object System.Windows.Forms.Button
 $btnGet.Text     = 'Get Data'
-$btnGet.Location = New-Object System.Drawing.Point(15, 208)
+$btnGet.Location = New-Object System.Drawing.Point(140, 208)
 $btnGet.Size     = New-Object System.Drawing.Size(118, 30)
 $form.Controls.Add($btnGet)
+$form.Controls.Add($btnRefresh)
 
 $btnCreate = New-Object System.Windows.Forms.Button
 $btnCreate.Text     = 'Create Device'
-$btnCreate.Location = New-Object System.Drawing.Point(140, 208)
+$btnCreate.Location = New-Object System.Drawing.Point(265, 208)
 $btnCreate.Size     = New-Object System.Drawing.Size(118, 30)
 $form.Controls.Add($btnCreate)
 
 $btnHeaders = New-Object System.Windows.Forms.Button
 $btnHeaders.Text     = 'Show Headers'
-$btnHeaders.Location = New-Object System.Drawing.Point(265, 208)
-$btnHeaders.Size     = New-Object System.Drawing.Size(118, 30)
+$btnHeaders.Location = New-Object System.Drawing.Point(390, 208)
+$btnHeaders.Size     = New-Object System.Drawing.Size(135, 30)
 $form.Controls.Add($btnHeaders)
 
 # Output box
+$progressBar = New-Object System.Windows.Forms.ProgressBar
+$progressBar.Location = New-Object System.Drawing.Point(15, 245)
+$progressBar.Size     = New-Object System.Drawing.Size(510, 18)
+$progressBar.Style    = 'Continuous'
+$progressBar.Visible  = $false
+$form.Controls.Add($progressBar)
+
 $txtOutput = New-Object System.Windows.Forms.TextBox
-$txtOutput.Location   = New-Object System.Drawing.Point(15, 250)
-$txtOutput.Size       = New-Object System.Drawing.Size(510, 285)
+$txtOutput.Location   = New-Object System.Drawing.Point(15, 270)
+$txtOutput.Size       = New-Object System.Drawing.Size(510, 265)
 $txtOutput.Multiline  = $true
 $txtOutput.ScrollBars = 'Both'
 $txtOutput.ReadOnly   = $true
@@ -200,6 +218,29 @@ $lblStatus.Location = New-Object System.Drawing.Point(15, 542)
 $lblStatus.Size     = New-Object System.Drawing.Size(510, 20)
 $lblStatus.Anchor   = 'Bottom,Left,Right'
 $form.Controls.Add($lblStatus)
+
+$lblFooter = New-Object System.Windows.Forms.LinkLabel
+$lblFooter.Location = New-Object System.Drawing.Point(15, 560)
+$lblFooter.Size     = New-Object System.Drawing.Size(510, 18)
+$lblFooter.Text     = "Version $scriptVersion - Copyright $createdYear - $currentYear Don Zalmrol - GitHub"
+$lblFooter.LinkColor = [System.Drawing.Color]::FromArgb(26, 92, 165)
+$lblFooter.ActiveLinkColor = [System.Drawing.Color]::FromArgb(18, 68, 120)
+$lblFooter.VisitedLinkColor = [System.Drawing.Color]::FromArgb(26, 92, 165)
+$lblFooter.LinkBehavior = [System.Windows.Forms.LinkBehavior]::AlwaysUnderline
+$lblFooter.TextAlign = 'MiddleCenter'
+$lblFooter.Anchor   = 'Bottom,Left,Right'
+$lblFooter.Font = New-Object System.Drawing.Font('Segoe UI', 8, [System.Drawing.FontStyle]::Regular)
+$lblFooter.Links.Clear()
+$lblFooter.Links.Add($lblFooter.Text.IndexOf('Don Zalmrol'), 'Don Zalmrol'.Length, 'https://www.don-zalmrol.be') | Out-Null
+$lblFooter.Links.Add($lblFooter.Text.IndexOf('GitHub'), 'GitHub'.Length, 'https://github.com/DonZalmrol') | Out-Null
+$lblFooter.Add_LinkClicked({
+    param($sender, $eventArgs)
+    $link = [string]$eventArgs.Link.LinkData
+    if (-not [string]::IsNullOrWhiteSpace($link)) {
+        Start-Process -FilePath $link
+    }
+})
+$form.Controls.Add($lblFooter)
 
 # Validates required credentials for authenticated actions.
 function Test-Credentials {
@@ -222,6 +263,60 @@ function Invoke-Action {
         $form.Cursor    = 'Default'
         $lblStatus.Text = 'Done.'
     }
+}
+
+# Sends a short activation ramp after device registration. Values rise from 0 to 5 over 5 one-minute
+# uploads to confirm the device settles and is ready for normal uploads while avoiding SHIELD rate spikes.
+function Invoke-ActivationSequence {
+    param(
+        [string] $UserId,
+        [string] $UserHash,
+        [string] $DeviceId,
+        [int] $SyncCount = 5,
+        [int] $IntervalSeconds = 60
+    )
+
+    $progressBar.Minimum = 0
+    $progressBar.Maximum = $SyncCount
+    $progressBar.Value = 0
+    $progressBar.Visible = $true
+
+    $values = @()
+    if ($SyncCount -eq 1) {
+        $values = @(5)
+    }
+    else {
+        for ($i = 0; $i -lt $SyncCount - 1; $i++) {
+            $values += [Math]::Floor(($i / [double]([Math]::Max(1, $SyncCount - 1))) * 5)
+        }
+        $values += 5
+    }
+
+    for ($index = 0; $index -lt $values.Count; $index++) {
+        $value = [int]$values[$index]
+        $txtOutput.Text = "Activation sync $($index + 1)/$($values.Count): sending dummy value $value..."
+        $lblStatus.Text = "Sync $($index + 1)/$($values.Count): $value"
+        $progressBar.Value = $index + 1
+        $form.Refresh()
+
+        $output = & $corePath -UserId $UserId -UserHash $UserHash -DeviceId $DeviceId -SendDummyData -DummyDataValue $value 2>&1
+        if ($output -is [System.Management.Automation.ErrorRecord]) {
+            $txtOutput.Text = "ERROR: $($output.Exception.Message)"
+            break
+        }
+
+        if ($index -lt ($values.Count - 1) -and $IntervalSeconds -gt 0) {
+            for ($wait = 0; $wait -lt $IntervalSeconds; $wait++) {
+                $remaining = $IntervalSeconds - $wait
+                $lblStatus.Text = "Waiting $remaining s before next activation sync..."
+                [System.Windows.Forms.Application]::DoEvents()
+                Start-Sleep -Seconds 1
+            }
+        }
+    }
+
+    $lblStatus.Text = 'Done.'
+    $progressBar.Visible = $false
 }
 
 # Builds the effective API path, substituting {id} with the selected Device ID.
@@ -274,12 +369,36 @@ $btnRefresh.Add_Click({
 $btnCreate.Add_Click({
     if (-not (Test-Credentials)) { return }
     $confirm = [System.Windows.Forms.MessageBox]::Show(
-        'Register a new device on your uRADMonitor account?',
+        'Register a new device on your uRADMonitor account and send a 5-minute dummy activation ramp?',
         'Create Device', 'YesNo', 'Question')
     if ($confirm -ne 'Yes') { return }
 
-    Invoke-Action 'Registering device...' {
-        Invoke-Core @{ UserId = $txtUserId.Text; UserHash = $txtUserKey.Text; CreateDevice = $true }
+    $lblStatus.Text = 'Registering device...'
+    $form.Cursor = 'WaitCursor'; $form.Refresh()
+    try {
+        $result = & $corePath -UserId $txtUserId.Text -UserHash $txtUserKey.Text -CreateDevice -ActivationSyncs 0 2>&1
+        if ($result -is [System.Management.Automation.ErrorRecord]) {
+            $txtOutput.Text = "ERROR: $($result.Exception.Message)"
+            return
+        }
+
+        $json = $result | ConvertTo-Json -Depth 8
+
+        if ($null -ne $result -and $result.NewDeviceId) {
+            $txtOutput.Text = "Registered device: $($result.NewDeviceId)`r`n`r`n$json"
+            Invoke-ActivationSequence -UserId $txtUserId.Text -UserHash $txtUserKey.Text -DeviceId $result.NewDeviceId -SyncCount 5 -IntervalSeconds 60
+            $txtOutput.Text = "Registered device: $($result.NewDeviceId)`r`nActivation sequence complete.`r`n`r`n$json"
+        }
+        else {
+            $txtOutput.Text = $json
+        }
+    }
+    catch {
+        $txtOutput.Text = "ERROR: $($_.Exception.Message)"
+    }
+    finally {
+        $form.Cursor = 'Default'
+        $lblStatus.Text = 'Done.'
     }
 })
 
