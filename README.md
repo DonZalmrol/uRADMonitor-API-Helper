@@ -7,11 +7,10 @@ register a brand‑new device using uRADMonitor's **DIDAP** (Dynamic ID Allocati
 ## Features
 
 - Builds the two custom auth headers uRADMonitor requires on every request.
-- Derives `X-User-hash` from your account password (lowercase MD5), or accepts a pre‑computed hash / User Key.
-- Falls back to the public read‑only guest identity (`www` / `global`) when no credentials are supplied.
+- Uses the User Key from your uRADMonitor Dashboard API tab as `X-User-hash`.
 - Calls any API path and returns the parsed response.
 - Registers a new sensor via DIDAP and returns the server‑assigned Device ID (`13xxxxxx`).
-- Can send a slow 5-minute dummy activation ramp after registration to help the new device settle without triggering SHIELD rate protection.
+- Validates registration EXP fields and copies a firmware-ready device ID after successful registration.
 
 ## Requirements
 
@@ -24,18 +23,16 @@ register a brand‑new device using uRADMonitor's **DIDAP** (Dynamic ID Allocati
 
 | File | Purpose |
 | --- | --- |
-| `uRADMonitor - Get API Headers and Data.ps1` | Core script: headers, API queries, device registration. |
-| `uRADMonitor GUI.ps1` | uRADMonitor API Helper – Windows Forms front-end for the core script. |
+| `uRADMonitor - Get API Headers and Data.ps1` | API helper and Windows Forms interface: headers, queries, and device registration. |
 | `uradmonitor-logo-2026.png` / `uradmonitor-logo-2026.ico` | Optional branding assets used by the GUI. |
 | `gui-screenshot.png` | Screenshot used in this README. |
 
 ## GUI
 
-`uRADMonitor GUI.ps1` (**uRADMonitor API Helper**) provides a small Windows Forms front-end for the
-core script – the easiest way to get started:
+Run the single script with no parameters to open the **uRADMonitor API Helper** Windows Forms interface:
 
 ```powershell
-.\uRADMonitor GUI.ps1
+.\uRADMonitor - Get API Headers and Data.ps1
 ```
 
 ![uRADMonitor API Helper](gui-screenshot.png)
@@ -47,6 +44,10 @@ core script – the easiest way to get started:
   retrieves the selected path.
 - **Create Device** and **Show Headers** run the matching core-script action and show the result as
   formatted JSON.
+- **Dashboard Online** opens the uRADMonitor Dashboard in your default browser.
+- **New Device Setup** lets you choose the initial sensor readings sent with a registration request.
+  After registration, the Device ID is copied to the clipboard and selected in the Device ID picker.
+- The GUI remains responsive during API requests and disables its action buttons until the request completes.
 
 Windows Forms needs an STA thread, so the GUI relaunches itself in Windows PowerShell (`-STA`) when
 started from `pwsh`. Entering the key in the GUI also keeps it out of your shell history.
@@ -60,30 +61,27 @@ Every request is authenticated with two headers:
 
 | Header | Value |
 | --- | --- |
-| `X-User-id` | Your account User ID (numeric), or `www` for public read-only access. |
-| `X-User-hash` | Your account **User Key** (shown on the Dashboard **API** tab), or `global` for public access. |
+| `X-User-id` | Your account User ID (numeric). |
+| `X-User-hash` | Your account **User Key** (shown on the Dashboard **API** tab). |
 
 > The `X-User-hash` value is your **User Key**, not your login password. Copy the User ID and User
-> Key from the uRADMonitor Dashboard **API** tab and pass the key with `-UserHash`. The `-Password`
-> switch is only a shortcut that sends `MD5(password)` and will fail unless your User Key happens to
-> equal that hash — so prefer `-UserHash`.
+> Key from the uRADMonitor Dashboard **API** tab and pass the key with `-UserHash`.
 
 ## Parameters
 
 | Parameter | Description |
 | --- | --- |
-| `-UserId` | Account User ID. Defaults to `www` (public guest). |
-| `-Password` | Password used to derive `X-User-hash`. Accepts a `String`, `SecureString`, or `PSCredential`. Ignored when `-UserHash` is set. |
-| `-UserHash` | Pre‑computed `X-User-hash` (or your User Key). Defaults to `global` when no credentials are given. |
+| `-UserId` | Account User ID. Required for command-line API actions. |
+| `-UserHash` | Your User Key. Required for command-line API actions. |
 | `-Path` | API path relative to the base URI (e.g. `devices`). When omitted, only the headers are returned. |
 | `-BaseUri` | API base URI. Defaults to `https://data.uradmonitor.com/api/v1`. |
+| `-TimeoutSeconds` | Maximum seconds to wait for an API request. Defaults to `30`; GET requests retry transient failures twice. |
 | `-ShowHeaders` | Also print the resolved headers (the hash is masked). |
+| `-Gui` | Opens the Windows Forms interface. This is the default when the script has no parameters. |
 | `-SendDummyData` | Sends a single EXP upload for a device using the supplied `-DummyDataValue`. Useful for an activation test or a manual sync. |
 | `-DummyDataValue` | Dummy sensor value to send with `-SendDummyData`. Defaults to `0`. |
-| `-ActivationSyncs` | Number of slow dummy activation syncs to send after `-CreateDevice`. Defaults to `5`. |
-| `-ActivationIntervalSeconds` | Delay in seconds between activation syncs. Defaults to `60` to keep traffic gentle and within SHIELD limits. |
 | `-CreateDevice` | Register a new device via DIDAP and return the assigned Device ID. Requires authenticated credentials. |
-| `-DeviceId` | Placeholder `X-Device-id` used with `-CreateDevice`. Defaults to `13000000` (asks the server to allocate a new ID). |
+| `-DeviceId` | Placeholder `X-Device-id` used with `-CreateDevice`. Defaults to `13000000`, the manual registration value in the uRADMonitor tutorial. |
 | `-InitialValues` | EXP fields (`ID/value`) sent with the registration upload. Defaults to temperature, pressure, humidity, CO₂, PM2.5 and radiation, all `0`. |
 
 ## Common API paths
@@ -98,10 +96,10 @@ Relative to `https://data.uradmonitor.com/api/v1/`:
 
 ## Usage
 
-Show the public guest headers (no API call):
+Show your authenticated headers (no API call):
 
 ```powershell
-.\uRADMonitor - Get API Headers and Data.ps1 -ShowHeaders
+.\uRADMonitor - Get API Headers and Data.ps1 -UserId 7076 -UserHash '<your User Key>' -ShowHeaders
 ```
 
 List your account's devices:
@@ -168,20 +166,22 @@ To register a new sensor, the script POSTs to the EXP upload endpoint with the p
 `X-Device-id` header. The server allocates a unique Device ID (format `13xxxxxx`) and returns it as
 `{ "setid": "13xxxxxx" }`.
 
+### DIDAP identifiers
+
+- `13000000` is the placeholder this helper uses for manual registration. It is the value shown in
+  uRADMonitor's manual upload example and reliably requests a new allocation.
+- `13xxxxxx` is an allocated device ID returned in `setid`; persist it in the device's non-volatile
+  storage and use it for every future upload.
+- `00000000` and `FFFFFFFF` are unknown-ID values described in firmware-oriented DIDAP material,
+  but this helper does not offer them because they have been rejected by the API during its manual
+  registration tests.
+
 ```powershell
 .\uRADMonitor - Get API Headers and Data.ps1 -UserId 7076 -UserHash '<your User Key>' -CreateDevice
 # -> New device registered. Device ID: 1300FFFF
 # -> Initial values sent: 02/0/03/0/04/0/07/0/09/0/0B/0
 # -> View it here: https://www.uradmonitor.com/tools/dashboard-09/?open=1300FFFF
 ```
-
-For a new device, the script can also send a gentle 5-minute activation sequence after registration:
-
-```powershell
-.\uRADMonitor - Get API Headers and Data.ps1 -UserId 7076 -UserHash '<your User Key>' -CreateDevice -ActivationSyncs 5 -ActivationIntervalSeconds 60
-```
-
-This sends a slow ramp like `0, 1, 2, 3, 4, 5` over time so the device is active without hammering the API. This is intentional because uRADMonitor has SHIELD / DDoS protections and too many rapid DIDAP or EXP requests can trigger account or IP blocking.
 
 The request that works looks like this:
 
@@ -243,13 +243,11 @@ The registration upload initialises these sensors to `0`:
 
 ## Security and rate-limit notes
 
-- Prefer `-Password (Read-Host -AsSecureString)` or a `PSCredential` over a plain string so the
-  secret doesn't land in your shell history.
 - Keep your User ID and User Key private. Rotate the key from the Dashboard if it is exposed.
-- The public guest identity (`www` / `global`) can only read publicly shared data and cannot
-  register devices.
 - uRADMonitor has a SHIELD/DDoS protection layer that can flag an account or IP if DIDAP or EXP uploads are made too aggressively.
-- Do not create many DIDAP IDs in quick succession. A slow activation pattern is safer than a burst of rapid registrations or repeated uploads.
+- Do not create many DIDAP IDs in quick succession or repeatedly upload dummy data.
+- Persist the returned Device ID in your device's EEPROM, NVS, or other non-volatile storage; do not
+  request a DIDAP ID on every boot.
 - If a DIDAP response returns a valid `setid` but the device does not immediately appear in the dashboard, wait a few minutes and re-check the device list before retrying.
 
 ## References
