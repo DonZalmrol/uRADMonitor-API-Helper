@@ -126,32 +126,7 @@
 #>
 
 [CmdletBinding()]
-param(
-    [string] $UserId,
-
-    [string] $UserHash,
-
-    [string] $Path,
-
-    [string] $BaseUri = 'https://data.uradmonitor.com/api/v1',
-
-    [ValidateRange(1, 120)]
-    [int] $TimeoutSeconds = 30,
-
-    [switch] $ShowHeaders,
-
-    [switch] $Gui,
-
-    [switch] $SendDummyData,
-
-    [int] $DummyDataValue = 0,
-
-    [switch] $CreateDevice,
-
-    [string] $DeviceId = '13000000',
-
-    [string] $InitialValues = '02/0/03/0/04/0/07/0/09/0/0B/0'
-)
+param()
 
 function Test-uRADMonitorInitialValues {
     param([Parameter(Mandatory)] [string] $Values)
@@ -573,12 +548,9 @@ Dashboard Online opens uRADMonitor in your default browser.
     $form.Dispose()
 }
 
-# -----------------------------
-# Open the GUI when requested explicitly or when the script is run with no command-line parameters.
-if ($Gui -or $PSBoundParameters.Count -eq 0) {
-    Show-uRADMonitorGui
-    return
-}
+# GUI-first behavior: the desktop interface is the intended user experience.
+Show-uRADMonitorGui
+return
 
 # Resolve the X- authentication headers
 # -----------------------------
