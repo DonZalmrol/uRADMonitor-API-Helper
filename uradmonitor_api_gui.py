@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Tkinter GUI for the uRADMonitor API helper.
 
-This mirrors the core PowerShell helper behavior in a desktop window:
-- build U-User authentication headers
+This provides a desktop window to:
+- build X-User authentication headers
 - refresh account device IDs
 - query selected API paths
 - create a DIDAP device
@@ -26,11 +26,76 @@ from typing import Any, Dict, Optional
 import requests
 
 BASE_URI = "https://data.uradmonitor.com/api/v1"
-SUPPORTED_SENSOR_IDS = {
-    "02", "03", "04", "05", "06", "07", "08", "09",
-    "0A", "0B", "0C", "0D", "0E", "0F", "10", "11",
-    "12", "13", "14",
+
+# EXP protocol sensor fields (id, label, unit) from the uRADMonitor open-data upload tutorial.
+# Field 01 (Unix timestamp) is mandatory and added automatically on every upload.
+SENSOR_DEFINITIONS = [
+    ("01", "Local time (epoch)", "Unix timestamp, seconds"),
+    ("02", "Temperature", "Degrees Celsius"),
+    ("03", "Barometric pressure", "Pascals"),
+    ("04", "Relative humidity", "Percent"),
+    ("05", "Illuminance", "Lux"),
+    ("06", "VOC", "Ohms (sensor resistance)"),
+    ("07", "CO2", "Parts per million"),
+    ("08", "CH2O (Formaldehyde)", "Parts per million"),
+    ("09", "PM2.5", "Micrograms per cubic metre"),
+    ("0A", "Battery voltage", "Volts"),
+    ("0B", "Radiation level", "Counts per minute"),
+    ("0C", "Geiger inverter voltage", "Volts"),
+    ("0D", "Geiger inverter duty cycle", "Promille (0-1000)"),
+    ("0E", "Hardware version", "Integer"),
+    ("0F", "Firmware version", "Integer"),
+    ("10", "Geiger tube type", "Manufacturer-defined ID"),
+    ("11", "Noise level", "Decibels"),
+    ("12", "PM1.0", "Micrograms per cubic metre"),
+    ("13", "PM10", "Micrograms per cubic metre"),
+    ("14", "Ozone (O3)", "Parts per billion"),
+    ("15", "Radon (Rn)", "Becquerels per cubic metre"),
+    ("16", "Wind speed", "Metres per second"),
+    ("17", "Wind direction", "Azimuth degrees"),
+    ("18", "Rain accumulation", "Millimetres"),
+    ("19", "Irradiance", "Watts per square metre"),
+    ("1A", "Signal", "dBm"),
+]
+
+# The mandatory timestamp (01) is supplied automatically, so it is not a selectable measurement.
+MANDATORY_SENSOR_ID = "01"
+SUPPORTED_SENSOR_IDS = {sensor_id for sensor_id, _, _ in SENSOR_DEFINITIONS if sensor_id != MANDATORY_SENSOR_ID}
+SENSOR_LABELS = {sensor_id: label for sensor_id, label, _ in SENSOR_DEFINITIONS}
+
+# Suggested default values for specific EXP fields; all other optional fields default to "0".
+SENSOR_DEFAULT_VALUES = {
+    "0E": "3",    # Hardware version
+    "0F": "104",  # Firmware version
 }
+
+# Geiger tube type field (10) handled with a dropdown instead of a free-text value.
+TUBE_SENSOR_ID = "10"
+CUSTOM_TUBE_LABEL = "Custom..."
+
+# Geiger tube types from the uRADMonitor KIT1 firmware (code/124/geiger/detectors.h).
+# Each entry is (decimal tube ID, display name); the decimal ID is sent as the field 10 value.
+TUBE_DEFINITIONS = [
+    (0, "Unknown"),
+    (1, "SBM-20"),
+    (2, "SI-29BG"),
+    (3, "SBM-19"),
+    (4, "LND-712"),
+    (5, "SBM-20M"),
+    (6, "SI-22G"),
+    (7, "STS-5"),
+    (8, "SI-3BG"),
+    (9, "SBM-21"),
+    (10, "SBT-9"),
+    (11, "SI-1G"),
+    (12, "SI-8B"),
+    (13, "SBT-10A"),
+    (14, "J305"),
+    (15, "M4011"),
+]
+TUBE_CHOICES = [f"{name} (0x{tube_id:X})" for tube_id, name in TUBE_DEFINITIONS]
+TUBE_CHOICE_TO_VALUE = {choice: str(tube_id) for choice, (tube_id, _) in zip(TUBE_CHOICES, TUBE_DEFINITIONS)}
+TUBE_VALUE_TO_CHOICE = {str(tube_id): choice for choice, (tube_id, _) in zip(TUBE_CHOICES, TUBE_DEFINITIONS)}
 
 
 class ApiError(RuntimeError):
@@ -81,7 +146,7 @@ def validate_initial_values(values: str) -> None:
         sensor_id = segments[index].upper()
         if sensor_id not in SUPPORTED_SENSOR_IDS:
             raise ValueError(
-                f"Unsupported EXP sensor ID '{sensor_id}'. Use an ID from 02 through 14, excluding 01 which is added automatically."
+                f"Unsupported EXP sensor ID '{sensor_id}'. Use an ID from 02 through 1A, excluding 01 which is added automatically."
             )
 
         try:
@@ -179,31 +244,6 @@ def send_exp_upload(
     raise ApiError(f"EXP upload failed for device '{device_id}'.")
 
 
-def send_dummy_data(
-    headers: Dict[str, str],
-    base_uri: str,
-    device_id: str,
-    value: int = 0,
-    timeout: int = 30,
-) -> str:
-    exp_headers = dict(headers)
-    exp_headers["X-Device-id"] = str(device_id)
-
-    payload = f"01/{int(time.time())}/02/{value}"
-    uri = f"{base_uri.rstrip('/')}/upload/exp/{payload}"
-    for attempt in range(1, 4):
-        try:
-            response = requests.post(uri, headers=exp_headers, timeout=timeout)
-            response.raise_for_status()
-            return response.text
-        except requests.RequestException as exc:
-            if attempt == 3:
-                raise ApiError(f"Dummy upload failed: {get_error_detail(exc)}") from exc
-            time.sleep(attempt)
-
-    raise ApiError(f"Dummy upload failed for device '{device_id}'.")
-
-
 def register_new_device(
     headers: Dict[str, str],
     base_uri: str,
@@ -228,6 +268,265 @@ def register_new_device(
         ),
         "RawResponse": content,
     }
+
+
+def parse_initial_values(values: str) -> Dict[str, str]:
+    """Parse an 'ID/value/ID/value' EXP string into an ordered {id: value} mapping."""
+    result: Dict[str, str] = {}
+    if not values:
+        return result
+    segments = [segment.strip() for segment in values.strip().strip("/").split("/") if segment.strip()]
+    for index in range(0, len(segments) - 1, 2):
+        result[segments[index].upper()] = segments[index + 1]
+    return result
+
+
+def center_on_parent(window: tk.Misc, parent: tk.Misc) -> None:
+    try:
+        px, py = parent.winfo_rootx(), parent.winfo_rooty()
+        pw, ph = parent.winfo_width(), parent.winfo_height()
+        w, h = window.winfo_width(), window.winfo_height()
+        window.geometry(f"+{px + (pw - w) // 2}+{py + (ph - h) // 2}")
+    except Exception:
+        pass
+
+
+class SensorSelectionDialog(tk.Toplevel):
+    """Modal checkbox picker for the EXP sensor fields used as a device's initial values."""
+
+    def __init__(self, parent: tk.Misc, current_values: str = ""):
+        super().__init__(parent)
+        self.title("Select EXP Sensors")
+        self.transient(parent)
+        self.resizable(False, True)
+        self.result: Optional[str] = None
+
+        selected = parse_initial_values(current_values)
+        self._rows: Dict[str, Dict[str, Any]] = {}
+
+        intro = ttk.Label(
+            self,
+            text=(
+                "Tick each sensor to include in the device's initial upload and enter its value.\n"
+                "Field 01 (Unix timestamp) is mandatory and is added automatically on every upload."
+            ),
+            justify="left",
+        )
+        intro.pack(fill="x", padx=12, pady=(12, 8))
+
+        note = ttk.Label(
+            self,
+            text=(
+                "Important: include every parameter your device will ever report in this first\n"
+                "upload. Any field missing from the first upload is disabled and hidden on the\n"
+                "dashboard, and re-enabling it later requires contacting uRADMonitor support.\n"
+                "Rule of thumb: upload complete data from day one (approximate values are fine)."
+            ),
+            justify="left",
+            foreground="#b00020",
+        )
+        note.pack(fill="x", padx=12, pady=(0, 8))
+
+        container = ttk.Frame(self)
+        container.pack(fill="both", expand=True, padx=12)
+
+        canvas = tk.Canvas(container, borderwidth=0, highlightthickness=0, width=440, height=420)
+        scrollbar = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+
+        grid = ttk.Frame(canvas)
+        grid.columnconfigure(1, weight=1)
+        grid_window = canvas.create_window((0, 0), window=grid, anchor="nw")
+        grid.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(grid_window, width=e.width))
+
+        ttk.Label(grid, text="Use", font=("Segoe UI", 9, "bold")).grid(row=0, column=0, padx=(0, 8), pady=(0, 4))
+        ttk.Label(grid, text="Sensor", font=("Segoe UI", 9, "bold")).grid(row=0, column=1, sticky="w", pady=(0, 4))
+        ttk.Label(grid, text="Value", font=("Segoe UI", 9, "bold")).grid(row=0, column=2, padx=(8, 0), pady=(0, 4))
+
+        for offset, (sensor_id, label, unit) in enumerate(SENSOR_DEFINITIONS, start=1):
+            mandatory = sensor_id == MANDATORY_SENSOR_ID
+            check_var = tk.BooleanVar(value=mandatory or sensor_id in selected)
+            check = ttk.Checkbutton(grid, variable=check_var)
+            if mandatory:
+                check.state(["disabled", "selected"])
+            check.grid(row=offset, column=0, padx=(0, 8), pady=2)
+
+            ttk.Label(grid, text=f"{sensor_id}  {label} ({unit})").grid(row=offset, column=1, sticky="w", pady=2)
+
+            if mandatory:
+                ttk.Label(grid, text="automatic", foreground="#666666").grid(row=offset, column=2, sticky="e", padx=(8, 0), pady=2)
+                value_var = None
+                self._rows[sensor_id] = {"check": check_var, "value": value_var, "mandatory": mandatory}
+            elif sensor_id == TUBE_SENSOR_ID:
+                preset = selected.get(sensor_id)
+                cell = ttk.Frame(grid)
+                cell.grid(row=offset, column=2, sticky="e", padx=(8, 0), pady=2)
+                choice_var = tk.StringVar()
+                combo = ttk.Combobox(
+                    cell, textvariable=choice_var, values=TUBE_CHOICES + [CUSTOM_TUBE_LABEL],
+                    state="readonly", width=16,
+                )
+                combo.pack(anchor="e")
+                custom_var = tk.StringVar()
+                custom_entry = ttk.Entry(cell, textvariable=custom_var, width=16)
+
+                def _toggle_custom(*_args, _choice=choice_var, _entry=custom_entry):
+                    if _choice.get() == CUSTOM_TUBE_LABEL:
+                        _entry.pack(anchor="e", pady=(4, 0))
+                    else:
+                        _entry.pack_forget()
+
+                choice_var.trace_add("write", _toggle_custom)
+                if preset is not None and preset not in TUBE_VALUE_TO_CHOICE:
+                    choice_var.set(CUSTOM_TUBE_LABEL)
+                    custom_var.set(preset)
+                elif preset is not None:
+                    choice_var.set(TUBE_VALUE_TO_CHOICE[preset])
+                else:
+                    choice_var.set(TUBE_VALUE_TO_CHOICE["3"])  # SBM-19 default
+                self._rows[sensor_id] = {
+                    "check": check_var, "value": None, "mandatory": mandatory,
+                    "tube": True, "choice": choice_var, "custom": custom_var,
+                }
+            else:
+                default_value = selected.get(sensor_id, SENSOR_DEFAULT_VALUES.get(sensor_id, "0"))
+                value_var = tk.StringVar(value=default_value)
+                ttk.Entry(grid, textvariable=value_var, width=12).grid(row=offset, column=2, sticky="e", padx=(8, 0), pady=2)
+                self._rows[sensor_id] = {"check": check_var, "value": value_var, "mandatory": mandatory}
+
+        button_row = ttk.Frame(self)
+        button_row.pack(fill="x", padx=12, pady=12)
+        ttk.Button(button_row, text="OK", command=self._on_ok).pack(side="right")
+        ttk.Button(button_row, text="Cancel", command=self._on_cancel).pack(side="right", padx=(0, 8))
+
+        self.bind("<Return>", lambda e: self._on_ok())
+        self.bind("<Escape>", lambda e: self._on_cancel())
+        self.protocol("WM_DELETE_WINDOW", self._on_cancel)
+
+        self.update_idletasks()
+        center_on_parent(self, parent)
+        self.grab_set()
+
+    def _on_ok(self) -> None:
+        pairs = []
+        for sensor_id, row in self._rows.items():
+            if row["mandatory"] or not row["check"].get():
+                continue
+            if row.get("tube"):
+                if row["choice"].get() == CUSTOM_TUBE_LABEL:
+                    raw = row["custom"].get().strip()
+                else:
+                    raw = TUBE_CHOICE_TO_VALUE.get(row["choice"].get(), "").strip()
+            else:
+                raw = row["value"].get().strip()
+            try:
+                value = float(raw)
+                if math.isnan(value) or math.isinf(value):
+                    raise ValueError
+            except ValueError:
+                messagebox.showerror(
+                    "Invalid value",
+                    f"Sensor {sensor_id} needs a finite number using a decimal point.",
+                    parent=self,
+                )
+                return
+            pairs.append(f"{sensor_id}/{raw}")
+
+        if not pairs:
+            messagebox.showwarning(
+                "Select a measurement",
+                "Select at least one sensor besides the mandatory timestamp. "
+                "The server rejects a timestamp-only upload.",
+                parent=self,
+            )
+            return
+
+        self.result = "/".join(pairs)
+        self.destroy()
+
+    def _on_cancel(self) -> None:
+        self.result = None
+        self.destroy()
+
+
+class ConfirmCreateDialog(tk.Toplevel):
+    """Confirm DIDAP registration, offering Yes / Edit sensors / Cancel."""
+
+    def __init__(self, parent: tk.Misc, initial_values: str = ""):
+        super().__init__(parent)
+        self.title("Confirm Device Creation")
+        self.transient(parent)
+        self.resizable(False, False)
+        self.result: Optional[str] = None  # "yes", "edit", or "cancel"
+
+        parsed = parse_initial_values(initial_values)
+
+        ttk.Label(
+            self,
+            text="Register a new device on your uRADMonitor account?",
+            font=("Segoe UI", 10, "bold"),
+            justify="left",
+        ).pack(fill="x", padx=14, pady=(14, 6))
+
+        ttk.Label(
+            self,
+            text="These sensor fields will be sent on the device's first upload:",
+            justify="left",
+        ).pack(fill="x", padx=14, pady=(0, 4))
+
+        summary = tk.Text(self, height=min(14, 2 + len(parsed)), width=46, wrap="none", font=("Consolas", 9))
+        summary.pack(fill="both", expand=True, padx=14)
+        summary.insert("end", "01  Local time (epoch) - automatic\n")
+        for sensor_id, value in parsed.items():
+            display = value
+            if sensor_id == TUBE_SENSOR_ID and value in TUBE_VALUE_TO_CHOICE:
+                display = TUBE_VALUE_TO_CHOICE[value]
+            summary.insert("end", f"{sensor_id}  {SENSOR_LABELS.get(sensor_id, 'Unknown')} = {display}\n")
+        summary.configure(state="disabled")
+
+        if not parsed:
+            ttk.Label(
+                self,
+                text=(
+                    "No measurement selected. Click Edit sensors to add at least one;\n"
+                    "the server rejects a timestamp-only upload."
+                ),
+                foreground="#b00020",
+                justify="left",
+            ).pack(fill="x", padx=14, pady=(6, 0))
+
+        ttk.Label(
+            self,
+            text=(
+                "Reminder: include every parameter your device will ever report now.\n"
+                "Fields missing from the first upload stay disabled until you contact support."
+            ),
+            foreground="#b00020",
+            justify="left",
+        ).pack(fill="x", padx=14, pady=(8, 0))
+
+        button_row = ttk.Frame(self)
+        button_row.pack(fill="x", padx=14, pady=14)
+        yes_btn = ttk.Button(button_row, text="Yes, create", command=lambda: self._set_result("yes"))
+        yes_btn.pack(side="right")
+        if not parsed:
+            yes_btn.state(["disabled"])
+        ttk.Button(button_row, text="Edit sensors", command=lambda: self._set_result("edit")).pack(side="right", padx=(0, 8))
+        ttk.Button(button_row, text="Cancel", command=lambda: self._set_result("cancel")).pack(side="right", padx=(0, 8))
+
+        self.bind("<Escape>", lambda e: self._set_result("cancel"))
+        self.protocol("WM_DELETE_WINDOW", lambda: self._set_result("cancel"))
+
+        self.update_idletasks()
+        center_on_parent(self, parent)
+        self.grab_set()
+
+    def _set_result(self, value: str) -> None:
+        self.result = value
+        self.destroy()
 
 
 class UraDMonitorGui(tk.Tk):
@@ -329,8 +628,12 @@ class UraDMonitorGui(tk.Tk):
         self.device_combo.grid(row=3, column=1, sticky="ew", pady=(0, 8))
 
         ttk.Label(top, text="Initial EXP:").grid(row=4, column=0, sticky="w", padx=(0, 10), pady=(0, 8))
-        self.initial_values_var = tk.StringVar(value="02/0/03/0/04/0/07/0/09/0/0B/0")
-        ttk.Entry(top, textvariable=self.initial_values_var, width=58).grid(row=4, column=1, columnspan=2, sticky="ew", pady=(0, 8))
+        self.initial_values_var = tk.StringVar(value="")
+        exp_row = ttk.Frame(top)
+        exp_row.grid(row=4, column=1, columnspan=2, sticky="ew", pady=(0, 8))
+        exp_row.columnconfigure(1, weight=1)
+        ttk.Button(exp_row, text="Select sensors...", command=self.on_select_sensors).grid(row=0, column=0, padx=(0, 8))
+        ttk.Entry(exp_row, textvariable=self.initial_values_var, state="readonly").grid(row=0, column=1, sticky="ew")
 
         button_row = ttk.Frame(top)
         button_row.grid(row=5, column=0, columnspan=3, sticky="ew", pady=(8, 12))
@@ -363,46 +666,65 @@ class UraDMonitorGui(tk.Tk):
 
         footer = tk.Frame(self)
         footer.pack(fill="x", padx=15, pady=(0, 6))
-        footer.grid_columnconfigure(0, weight=1)
 
-        footer_text = tk.Label(
+        version_label = tk.Label(
             footer,
-            text="Version 1.4.5 - Copyright 2026 ",
+            text="Version 1.4.5",
+            font=("Segoe UI", 8),
+            fg="#000000",
+            anchor="w",
+        )
+        version_label.grid(row=0, column=0, sticky="w")
+
+        copyright_label = tk.Label(
+            footer,
+            text=f"Copyright (c) {time.strftime('%Y')}",
             font=("Segoe UI", 8),
             fg="#000000",
             anchor="center",
         )
-        footer_text.grid(row=0, column=0, sticky="nsew")
+        copyright_label.grid(row=0, column=1, sticky="ew")
+
+        links = tk.Frame(footer)
+        links.grid(row=0, column=2, sticky="e")
 
         don_link = tk.Label(
-            footer,
+            links,
             text="Don Zalmrol",
             fg="#1a5ca5",
             font=("Segoe UI", 8, "underline"),
             cursor="hand2",
-            anchor="center",
         )
-        don_link.grid(row=0, column=1, sticky="nsew")
+        don_link.pack(side="left")
         don_link.bind("<Button-1>", lambda event: webbrowser.open("https://www.don-zalmrol.be"))
 
-        dash = tk.Label(footer, text=" - ", font=("Segoe UI", 8), fg="#000000", anchor="center")
-        dash.grid(row=0, column=2, sticky="nsew")
+        tk.Label(links, text=" - ", font=("Segoe UI", 8), fg="#000000").pack(side="left")
 
         github_link = tk.Label(
-            footer,
+            links,
             text="GitHub",
             fg="#1a5ca5",
             font=("Segoe UI", 8, "underline"),
             cursor="hand2",
-            anchor="center",
         )
-        github_link.grid(row=0, column=3, sticky="nsew")
+        github_link.pack(side="left")
         github_link.bind("<Button-1>", lambda event: webbrowser.open("https://github.com/DonZalmrol"))
+
+        tk.Label(links, text=" - ", font=("Segoe UI", 8), fg="#000000").pack(side="left")
+
+        uradmonitor_link = tk.Label(
+            links,
+            text="uRADMonitor",
+            fg="#1a5ca5",
+            font=("Segoe UI", 8, "underline"),
+            cursor="hand2",
+        )
+        uradmonitor_link.pack(side="left")
+        uradmonitor_link.bind("<Button-1>", lambda event: webbrowser.open("https://www.uradmonitor.com"))
 
         footer.grid_columnconfigure(0, weight=1)
         footer.grid_columnconfigure(1, weight=0)
-        footer.grid_columnconfigure(2, weight=0)
-        footer.grid_columnconfigure(3, weight=0)
+        footer.grid_columnconfigure(2, weight=1)
 
         top.columnconfigure(1, weight=1)
         top.rowconfigure(6, weight=1)
@@ -419,8 +741,9 @@ class UraDMonitorGui(tk.Tk):
             "Get Data retrieves the selected API path; {id} uses the selected Device ID.\n"
             "Create registers a new DIDAP device and keeps the assigned ID on the device list.\n"
             "Headers shows the resolved API headers with the User Key masked.\n\n"
-            "Initial EXP: 02/0 = temperature, 03/0 = pressure, 04/0 = humidity,\n"
-            "             07/0 = CO2, 09/0 = PM2.5, 0B/0 = radiation.\n"
+            "Initial EXP: click Select sensors... to tick the sensor fields and enter their\n"
+            "values for a new device. Field 01 (Unix timestamp) is mandatory and added\n"
+            "automatically on every upload.\n"
         )
         self._set_output_text(text)
 
@@ -442,9 +765,13 @@ class UraDMonitorGui(tk.Tk):
 
     def _set_busy(self, busy: bool) -> None:
         self.task_running = busy
-        for child in self.winfo_children():
+        self._set_buttons_state(self, "disabled" if busy else "normal")
+
+    def _set_buttons_state(self, widget, state: str) -> None:
+        for child in widget.winfo_children():
             if child.winfo_class() == "TButton":
-                child.configure(state="disabled" if busy else "normal")
+                child.configure(state=state)
+            self._set_buttons_state(child, state)
 
     def run_async(self, label: str, callback):
         def worker():
@@ -460,6 +787,14 @@ class UraDMonitorGui(tk.Tk):
         self.status_var.set(label)
         self._set_busy(True)
         threading.Thread(target=worker, daemon=True).start()
+
+    def on_select_sensors(self) -> None:
+        if self.task_running:
+            return
+        dialog = SensorSelectionDialog(self, self.initial_values_var.get())
+        self.wait_window(dialog)
+        if dialog.result is not None:
+            self.initial_values_var.set(dialog.result)
 
     def on_refresh_devices(self) -> None:
         if self.task_running:
@@ -509,6 +844,20 @@ class UraDMonitorGui(tk.Tk):
         if self.task_running:
             return
 
+        # Confirm first, letting the user edit the sensor selection and re-review before registering.
+        while True:
+            confirm = ConfirmCreateDialog(self, self.initial_values_var.get())
+            self.wait_window(confirm)
+            if confirm.result == "edit":
+                sensor_dialog = SensorSelectionDialog(self, self.initial_values_var.get())
+                self.wait_window(sensor_dialog)
+                if sensor_dialog.result is not None:
+                    self.initial_values_var.set(sensor_dialog.result)
+                continue
+            if confirm.result == "yes":
+                break
+            return
+
         def task():
             headers = self._get_headers()
             values = self.initial_values_var.get().strip()
@@ -537,8 +886,7 @@ class UraDMonitorGui(tk.Tk):
 
             return result
 
-        if messagebox.askyesno("Create Device", "Register a new device on your uRADMonitor account?"):
-            self.run_async("Registering device...", task)
+        self.run_async("Registering device...", task)
 
     def on_show_headers(self) -> None:
         if self.task_running:
@@ -568,7 +916,6 @@ class UraDMonitorGui(tk.Tk):
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="uRADMonitor API helper GUI")
-    parser.add_argument("--gui", action="store_true", help="Open the desktop GUI")
     parser.add_argument("--base-uri", default=BASE_URI, help="API base URI")
     args = parser.parse_args()
 

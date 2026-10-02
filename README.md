@@ -1,10 +1,9 @@
 # uRADMonitor API Helper
 
-A small desktop helper for the [uRADMonitor](https://www.uradmonitor.com/) REST API. It builds the required authentication headers (`X-User-id` / `X-User-hash`), lets you query device data, and can register a new device through the DIDAP flow.
+A small Python desktop helper for the [uRADMonitor](https://www.uradmonitor.com/) REST API. It builds the required authentication headers (`X-User-id` / `X-User-hash`), lets you query device data, and can register a new device through the DIDAP flow.
 
-This project is intentionally GUI-first. Run either application and work from its interface. The PowerShell GUI is the primary documented option, while the Python GUI is available for users who prefer Python:
+This project is GUI-first. Run the application and work from its interface:
 
-- Windows PowerShell: run `uRADMonitor - Get API Headers and Data.ps1`
 - Python: run `uradmonitor_api_gui.py`
 
 No special command-line parameters are required for normal use.
@@ -14,35 +13,31 @@ No special command-line parameters are required for normal use.
 - Builds the uRADMonitor authentication headers for each request
 - Loads device IDs from your account
 - Queries any selected API path
+- Picks a device's initial EXP sensors from a checkbox dialog, with the mandatory Unix timestamp added automatically
+- Offers a Geiger tube type dropdown (with a custom option) and sensible hardware/firmware version defaults
+- Confirms the sensor list before registering a new DIDAP device
 - Registers a new DIDAP device and stores the assigned ID
 - Validates EXP values and device IDs before upload
 - Opens the dashboard in the browser from the GUI
 
 ## Requirements
 
+- Python 3 and the `requests` package
 - Internet access to `https://data.uradmonitor.com`
 - A [uRADMonitor Dashboard](https://www.uradmonitor.com/dashboard) account
 - Your Dashboard API User ID and User Key from the API tab
-- Python 3 and the `requests` package, if using the Python version
 
 ## Files
 
 | File | Purpose |
 | --- | --- |
-| `uRADMonitor - Get API Headers and Data.ps1` | Windows GUI version of the helper |
-| `uradmonitor_api_gui.py` | Optional Python GUI version of the helper |
+| `uradmonitor_api_gui.py` | Python GUI version of the helper |
 | `uradmonitor-logo-2026.png` / `uradmonitor-logo-2026.ico` | Branding assets for the interface |
-| `gui-screenshot.png` | Screenshot of the Windows PowerShell GUI |
+| `gui-screenshot.png` | Screenshot of the main GUI |
+| `exp-menu-screenshot.png` | Screenshot of the Select EXP Sensors dialog |
+| `create-device-screenshot.png` | Screenshot of the Confirm Device Creation dialog |
 
 ## Run the app
-
-### Windows PowerShell
-
-```powershell
-.\uRADMonitor - Get API Headers and Data.ps1
-```
-
-### Python alternative
 
 Install the Python dependency if needed:
 
@@ -50,13 +45,11 @@ Install the Python dependency if needed:
 py -3 -m pip install requests
 ```
 
-Then launch the Python GUI:
+Then launch the GUI:
 
 ```powershell
 py -3 .\uradmonitor_api_gui.py
 ```
-
-The Python version provides the same GUI workflow and API operations as the PowerShell version.
 
 Then simply use the GUI to:
 
@@ -67,9 +60,11 @@ Then simply use the GUI to:
 
 ## Screenshots
 
-### Windows GUI
+![Main GUI](gui-screenshot.png)
 
-![PowerShell GUI](gui-screenshot.png)
+![Select EXP Sensors](exp-menu-screenshot.png)
+
+![Confirm Device Creation](create-device-screenshot.png)
 
 ## Authentication
 
@@ -94,7 +89,15 @@ Relative to `https://data.uradmonitor.com/api/v1/`:
 
 ## Device registration
 
-The GUI can create a new DIDAP device. It sends a registration upload with the placeholder device ID `13000000`, and the server responds with a new assigned device ID in the form `13xxxxxx`.
+The GUI can create a new DIDAP device. Click **Select sensors...** to choose the EXP fields the device will report on its first upload:
+
+- The Unix timestamp (field `01`) is mandatory and added automatically.
+- Hardware version (`0E`) and firmware version (`0F`) are pre-filled with defaults (`3` and `104`) and remain editable.
+- The Geiger tube type (`10`) is chosen from a dropdown of known tubes, with a custom option for any tube not listed.
+
+> Include every parameter the device will ever report in this first upload. Fields missing from the first upload stay disabled on the dashboard until you contact uRADMonitor support.
+
+Before registering, a confirmation dialog summarises the sensors to be sent (Yes / Edit sensors / Cancel). On confirmation, the helper sends a registration upload with the placeholder device ID `13000000`, and the server responds with a new assigned device ID in the form `13xxxxxx`.
 
 Store the returned Device ID and use it for all future uploads.
 
@@ -113,7 +116,7 @@ Store the returned Device ID and use it for all future uploads.
 
 Released under the [MIT License](LICENSE).
 
-Copyright &copy; DonZalmrol
+Copyright &copy; 2026 DonZalmrol
 
 ## Author
 
@@ -121,3 +124,4 @@ Copyright &copy; DonZalmrol
 
 - GitHub: <https://github.com/DonZalmrol/>
 - Website: <https://www.don-zalmrol.be/>
+- uRADMonitor: <https://www.uradmonitor.com/>
