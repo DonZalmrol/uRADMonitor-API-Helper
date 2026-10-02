@@ -301,6 +301,13 @@ class SensorSelectionDialog(tk.Toplevel):
         self.resizable(False, True)
         self.result: Optional[str] = None
 
+        icon_path = Path(__file__).resolve().parent / "uradmonitor-logo-2026.ico"
+        if icon_path.exists():
+            try:
+                self.iconbitmap(str(icon_path))
+            except Exception:
+                pass
+
         selected = parse_initial_values(current_values)
         self._rows: Dict[str, Dict[str, Any]] = {}
 
@@ -341,6 +348,27 @@ class SensorSelectionDialog(tk.Toplevel):
         grid_window = canvas.create_window((0, 0), window=grid, anchor="nw")
         grid.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
         canvas.bind("<Configure>", lambda e: canvas.itemconfigure(grid_window, width=e.width))
+
+        def _on_mousewheel(event: tk.Event) -> None:
+            if event.num == 4:
+                canvas.yview_scroll(-1, "units")
+            elif event.num == 5:
+                canvas.yview_scroll(1, "units")
+            else:
+                canvas.yview_scroll(-1 if event.delta > 0 else 1, "units")
+
+        def _bind_mousewheel(_event: tk.Event) -> None:
+            canvas.bind_all("<MouseWheel>", _on_mousewheel)
+            canvas.bind_all("<Button-4>", _on_mousewheel)
+            canvas.bind_all("<Button-5>", _on_mousewheel)
+
+        def _unbind_mousewheel(_event: tk.Event) -> None:
+            canvas.unbind_all("<MouseWheel>")
+            canvas.unbind_all("<Button-4>")
+            canvas.unbind_all("<Button-5>")
+
+        canvas.bind("<Enter>", _bind_mousewheel)
+        canvas.bind("<Leave>", _unbind_mousewheel)
 
         ttk.Label(grid, text="Use", font=("Segoe UI", 9, "bold")).grid(row=0, column=0, padx=(0, 8), pady=(0, 4))
         ttk.Label(grid, text="Sensor", font=("Segoe UI", 9, "bold")).grid(row=0, column=1, sticky="w", pady=(0, 4))
@@ -386,7 +414,7 @@ class SensorSelectionDialog(tk.Toplevel):
                 elif preset is not None:
                     choice_var.set(TUBE_VALUE_TO_CHOICE[preset])
                 else:
-                    choice_var.set(TUBE_VALUE_TO_CHOICE["3"])  # SBM-19 default
+                    choice_var.set(TUBE_VALUE_TO_CHOICE["1"])  # SBM-20 default (most common DIY tube)
                 self._rows[sensor_id] = {
                     "check": check_var, "value": None, "mandatory": mandatory,
                     "tube": True, "choice": choice_var, "custom": custom_var,
